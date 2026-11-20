@@ -13,6 +13,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
+CHANNEL_ID = os.environ.get("CHANNEL_ID")  # e.g. @yourchannel or -1001234567890
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -50,6 +51,25 @@ async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(data, parse_mode=ParseMode.HTML)
 
 
+async def post_channel_update(context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not CHANNEL_ID:
+        logger.warning("CHANNEL_ID is not set; skipping scheduled channel post.")
+        return
+
+    data = get_live_scores()
+    # Skip posting when there are no live games or an API warning occurred
+    if data == "No live matches right now." or data.startswith("⚠️"):
+        logger.info("No live matches to post right now.")
+        return
+
+    await context.bot.send_message(
+        chat_id=CHANNEL_ID,
+        text=data,
+        parse_mode=ParseMode.HTML,
+    )
+    logger.info("Posted 5-minute live score update to %s", CHANNEL_ID)
+
+
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     logger.error("Exception while handling an update:", exc_info=context.error)
 
@@ -65,5 +85,8 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("analysis", analysis))
     app.add_error_handler(error_handler)
 
-    logger.info("ScoreVanta1 is running...")
+    # Run every 5 minutes (300 seconds), starting 10 seconds after boot
+    app.job_queue.run_repeating(post_channel_update, interval=300, first=10)
+
+    logger.info("ScoreVanta1 is running with 5-minute channel updates...")
     app.run_polling()
