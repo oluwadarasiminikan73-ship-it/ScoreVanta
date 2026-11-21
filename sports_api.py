@@ -1,133 +1,152 @@
 import html
-import os
+from datetime import datetime, timezone
 import requests
 
-API_KEY = os.environ.get("SPORTS_API_KEY", "")
-BASE_URL = "https://v3.football.api-sports.io"
-HEADERS = {"x-apisports-key": API_KEY}
+# ESPN public scoreboard endpoints (no API key required)
+LEAGUES = {
+    "EPL": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard",
+    "La Liga": "https://site.api.espn.com/apis/site/v2/sports/soccer/esp.1/scoreboard",
+    "UCL": "https://site.api.espn.com/apis/site/v2/sports/soccer/uefa.champions/scoreboard",
+}
 
 
-def _api_get(endpoint: str, params: dict | None = None) -> tuple[list, str | None]:
-    if not API_KEY:
-        return [], "⚠️ <b>SPORTS_API_KEY</b> is missing in Railway variables."
-    try:
-        resp = requests.get(
-            f"{BASE_URL}/{endpoint.lstrip('/')}",
-            headers=HEADERS,
-            params=params or {},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        errors = payload.get("errors")
-        if errors:
-            return [], f"⚠️ API error: <code>{html.escape(str(errors))}</code>"
-        return payload.get("response", []), None
-    except Exception as exc:
-        return [], f"⚠️ Request failed: <code>{html.escape(str(exc))}</code>"
+def _fetch_events(date_str: str | None = None) -> list[dict]:
+    events: list[dict] = []
+    params = {"dates": date_str.replace("-", "")} if date_str else {}
+
+    for league_name, url in LEAGUES.items():
+        try:
+            resp = requests.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            for ev in data.get("events", []):
+                ev["_league"] = league_name
+                events.append(ev)
+        except Exception:
+            continue
+
+    return events
+
+
+def _parse_match(ev: dict) -> dict | None:
+    competitions = ev.get("competitions", [])
+    if not competitions:
+        return None
+    comp = competitions[0]
+    competitors = comp.get("competitors", [])
+    if len(competitors) < 2:
+        return None
+
+    home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
+    away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
+
+    status_obj = comp.get("status", {})
+    status_type = status_obj.get("type", {})
+    state = status_type.get("state", "pre")  # "pre", "in", "post"
+    detail = status_type.get("shortDetail") or status_type.get("description") or ""
+
+    return {
+        "id": str(ev.get("id", "")),
+        "league": ev.get("_league", ""),
+        "home": home.get("team", {}).get("displayName", "Home"),
+        "away": away.get("team", {}).get("displayName", "Away"),
+        "h_score": home.get("score", "0"),
+        "a_score": away.get("score", "0"),
+        "home_form": home.get("form", ""),
+        "away_form": away.get("form", ""),
+        "state": state,
+        "detail": detail,
+        "date": ev.get("date", ""),
+    }
 
 
 def get_live_scores(limit: int = 10) -> str:
-    matches, err = _api_get("fixtures", {"live": "all"})
-    if err:
-        return err
-    if not matches:
+    live_matches = []
+    for ev in _fetch_events():
+        m = _parse_match(ev)
+        if m and m["state"] == "in":
+            live_matches.append(m)
+
+    if not live_matches:
         return "No live matches right now."
 
     lines = ["🔴 <b>LIVE SCORES</b>\n"]
-    for m in matches[:limit]:
-        fixture_id = m["fixture"]["id"]
-        home = html.escape(m["teams"]["home"]["name"])
-        away = html.escape(m["teams"]["away"]["name"])
-        h_goals = m["goals"]["home"] if m["goals"]["home"] is not None else 0
-        a_goals = m["goals"]["away"] if m["goals"]["away"] is not None else 0
-        elapsed = m["fixture"]["status"].get("elapsed") or 0
+    for m in live_matches[:limit]:
+        home = html.escape(m["home"])
+        away = html.escape(m["away"])
+        detail = html.escape(m["detail"])
+        league = html.escape(m["league"])
         lines.append(
-            f"• <b>{home}</b> {h_goals} - {a_goals} <b>{away}</b> ({elapsed}') "
-            f"— ID: <code>{fixture_id}</code>"
+            f"• [{league}] <b>{home}</b> {m['h_score']} - {m['a_score']} <b>{away}</b> "
+            f"({detail}) — ID: <code>{html.escape(m['id'])}</code>"
         )
     return "\n".join(lines)
 
 
-def get_fixtures(date_str: str, limit: int = 10) -> str:
-    matches, err = _api_get("fixtures", {"date": date_str})
-    if err:
-        return err
-    if not matches:
-        return f"No fixtures found for <b>{html.escape(date_str)}</b>."
+def get_fixtures(date_str: str | None = None, limit: int = 10) -> str:
+    target_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    matches = []
+    for ev in _fetch_events(target_date):
+        m = _parse_match(ev)
+        if m:
+            matches.append(m)
 
-    lines = [f"📅 <b>FIXTURES ({html.escape(date_str)})</b>\n"]
+    if not matches:
+        return f"No fixtures found for <b>{html.escape(target_date)}</b>."
+
+    lines = [f"📅 <b>FIXTURES ({html.escape(target_date)})</b>\n"]
     for m in matches[:limit]:
-        fixture_id = m["fixture"]["id"]
-        home = html.escape(m["teams"]["home"]["name"])
-        away = html.escape(m["teams"]["away"]["name"])
-        kickoff = m["fixture"]["date"][11:16]
+        home = html.escape(m["home"])
+        away = html.escape(m["away"])
+        kickoff = m["date"][11:16] + " UTC" if len(m["date"]) >= 16 else m["detail"]
         lines.append(
-            f"• {kickoff} UTC | <b>{home}</b> vs <b>{away}</b> "
-            f"— ID: <code>{fixture_id}</code>"
+            f"• {html.escape(kickoff)} | <b>{home}</b> vs <b>{away}</b> "
+            f"— ID: <code>{html.escape(m['id'])}</code>"
         )
     return "\n".join(lines)
 
 
 def get_match_stats(fixture_id: str) -> str:
     if not fixture_id.isdigit():
-        return "Invalid Match ID. Use digits only, e.g. <code>/stats 123456</code>"
+        return "Invalid Match ID. Example: <code>/stats 701234</code>"
 
-    data, err = _api_get("fixtures/statistics", {"fixture": fixture_id})
-    if err:
-        return err
-    if len(data) < 2:
-        return "Match statistics are not available yet for this ID."
+    for ev in _fetch_events():
+        m = _parse_match(ev)
+        if m and m["id"] == fixture_id:
+            return (
+                f"📈 <b>MATCH SNAPSHOT: {html.escape(m['home'])} vs {html.escape(m['away'])}</b>\n\n"
+                f"• <b>Status:</b> {html.escape(m['detail'])}\n"
+                f"• <b>Score:</b> {html.escape(str(m['h_score']))} — {html.escape(str(m['a_score']))}\n"
+                f"• <b>League:</b> {html.escape(m['league'])}"
+            )
 
-    home_team = html.escape(data[0]["team"]["name"])
-    away_team = html.escape(data[1]["team"]["name"])
-
-    home_stats = {item["type"]: item["value"] for item in data[0].get("statistics", [])}
-    away_stats = {item["type"]: item["value"] for item in data[1].get("statistics", [])}
-
-    tracked = [
-        "Ball Possession",
-        "Total Shots",
-        "Shots on Goal",
-        "Corner Kicks",
-        "Yellow Cards",
-        "Red Cards",
-    ]
-
-    lines = [f"📈 <b>MATCH STATS: {home_team} vs {away_team}</b>\n"]
-    for stat in tracked:
-        h_val = html.escape(str(home_stats.get(stat) if home_stats.get(stat) is not None else "-"))
-        a_val = html.escape(str(away_stats.get(stat) if away_stats.get(stat) is not None else "-"))
-        lines.append(f"• <b>{html.escape(stat)}:</b> {h_val} — {a_val}")
-
-    return "\n".join(lines)
+    return "Match not found in current live/today feeds. Check IDs via /live or /fixtures."
 
 
 def get_match_analysis(fixture_id: str) -> str:
     if not fixture_id.isdigit():
-        return "Invalid Match ID. Use digits only, e.g. <code>/analysis 123456</code>"
+        return "Invalid Match ID. Example: <code>/analysis 701234</code>"
 
-    data, err = _api_get("predictions", {"fixture": fixture_id})
-    if err:
-        return err
-    if not data:
-        return "Analysis not available for this Match ID. Check IDs via /live or /fixtures."
+    for ev in _fetch_events():
+        m = _parse_match(ev)
+        if m and m["id"] == fixture_id:
+            h_form = html.escape(m["home_form"] or "N/A")
+            a_form = html.escape(m["away_form"] or "N/A")
+            h_wins = m["home_form"].count("W")
+            a_wins = m["away_form"].count("W")
 
-    pred = data[0].get("predictions", {})
-    teams = data[0].get("teams", {})
-    home_name = html.escape(teams.get("home", {}).get("name", "Home"))
-    away_name = html.escape(teams.get("away", {}).get("name", "Away"))
-    advice = html.escape(pred.get("advice") or "N/A")
-    pct = pred.get("percent", {})
-    home_pct = html.escape(str(pct.get("home") or "N/A"))
-    draw_pct = html.escape(str(pct.get("draw") or "N/A"))
-    away_pct = html.escape(str(pct.get("away") or "N/A"))
-    home_form = html.escape(teams.get("home", {}).get("last_5", {}).get("form") or "N/A")
-    away_form = html.escape(teams.get("away", {}).get("last_5", {}).get("form") or "N/A")
+            if h_wins > a_wins:
+                edge = f"{m['home']} hold recent form edge ({h_form} vs {a_form})"
+            elif a_wins > h_wins:
+                edge = f"{m['away']} hold recent form edge ({a_form} vs {h_form})"
+            else:
+                edge = f"Evenly matched on recent form ({h_form} vs {a_form})"
 
-    return (
-        f"📊 <b>GAME ANALYSIS: {home_name} vs {away_name}</b>\n\n"
-        f"• <b>Advice:</b> {advice}\n"
-        f"• <b>Win Probability:</b> Home {home_pct} | Draw {draw_pct} | Away {away_pct}\n"
-        f"• <b>Form (Last 5):</b> {home_form} vs {away_form}"
-    )
+            return (
+                f"📊 <b>GAME ANALYSIS: {html.escape(m['home'])} vs {html.escape(m['away'])}</b>\n\n"
+                f"• <b>Status:</b> {html.escape(m['detail'])}\n"
+                f"• <b>Recent Form:</b> {h_form} vs {a_form}\n"
+                f"• <b>Takeaway:</b> {html.escape(edge)}"
+            )
+
+    return "Analysis not available for this Match ID. Check IDs via /live or /fixtures."
