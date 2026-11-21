@@ -1,8 +1,7 @@
-import html
 from datetime import datetime, timezone
+import html
 import requests
 
-# ESPN public endpoints (no API key required)
 LEAGUES = {
     "EPL": {
         "scoreboard": "https://site.api.espn.com/apis/site/v2/sports/soccer/eng.1/scoreboard",
@@ -19,15 +18,15 @@ LEAGUES = {
 }
 
 
-def _to_int(val, default: int = 0) -> int:
+def _to_int(val, default=0):
     try:
         return int(str(val).strip())
     except (ValueError, TypeError):
         return default
 
 
-def _fetch_events(date_str: str | None = None) -> list[dict]:
-    events: list[dict] = []
+def _fetch_events(date_str=None):
+    events = []
     params = {"dates": date_str.replace("-", "")} if date_str else {}
 
     for league_name, urls in LEAGUES.items():
@@ -44,7 +43,7 @@ def _fetch_events(date_str: str | None = None) -> list[dict]:
     return events
 
 
-def _parse_match(ev: dict) -> dict | None:
+def _parse_match(ev):
     competitions = ev.get("competitions", [])
     if not competitions:
         return None
@@ -56,9 +55,8 @@ def _parse_match(ev: dict) -> dict | None:
     home = next((c for c in competitors if c.get("homeAway") == "home"), competitors[0])
     away = next((c for c in competitors if c.get("homeAway") == "away"), competitors[1])
 
-    status_obj = comp.get("status", {})
-    status_type = status_obj.get("type", {})
-    state = status_type.get("state", "pre")  # "pre", "in", "post"
+    status_type = comp.get("status", {}).get("type", {})
+    state = status_type.get("state", "pre")
     detail = status_type.get("shortDetail") or status_type.get("description") or ""
 
     return {
@@ -76,15 +74,14 @@ def _parse_match(ev: dict) -> dict | None:
     }
 
 
-def get_match_lineups(event_id: str, league_name: str | None = None) -> dict | None:
-    """Fetches starting lineups from ESPN's summary endpoint rosters."""
-    candidate_urls = (
+def get_match_lineups(event_id, league_name=None):
+    urls = (
         [LEAGUES[league_name]["summary"]]
         if league_name in LEAGUES
         else [cfg["summary"] for cfg in LEAGUES.values()]
     )
 
-    for url in candidate_urls:
+    for url in urls:
         try:
             resp = requests.get(url, params={"event": event_id}, timeout=10)
             resp.raise_for_status()
@@ -105,15 +102,12 @@ def get_match_lineups(event_id: str, league_name: str | None = None) -> dict | N
                         jersey = entry.get("jersey")
                         if name:
                             starters.append(f"#{jersey} {name}" if jersey else name)
-
                 if starters:
-                    parsed_teams.append(
-                        {
-                            "team": team_name,
-                            "formation": formation,
-                            "starters": starters[:11],
-                        }
-                    )
+                    parsed_teams.append({
+                        "team": team_name,
+                        "formation": formation,
+                        "starters": starters[:11],
+                    })
 
             if len(parsed_teams) == 2:
                 return {"home": parsed_teams[0], "away": parsed_teams[1]}
@@ -123,25 +117,31 @@ def get_match_lineups(event_id: str, league_name: str | None = None) -> dict | N
     return None
 
 
-def format_lineup_message(match: dict, lineups: dict) -> str:
+def format_lineup_message(match, lineups):
     home = lineups["home"]
     away = lineups["away"]
 
-    h_form_str = f" ({html.escape(home['formation'])})" if home.get("formation") else ""
-    a_form_str = f" ({html.escape(away['formation'])})" if away.get("formation") else ""
+    h_form = f" ({html.escape(home['formation'])})" if home.get("formation") else ""
+    a_form = f" ({html.escape(away['formation'])})" if away.get("formation") else ""
 
-    h_players = "\n".join(f"  {i + 1}. {html.escape(p)}" for i, p in enumerate(home["starters"]))
-    a_players = "\n".join(f"  {i + 1}. {html.escape(p)}" for i, p in enumerate(away["starters"]))
+    h_list = "\n".join(f"  {i + 1}. {html.escape(p)}" for i, p in enumerate(home["starters"]))
+    a_list = "\n".join(f"  {i + 1}. {html.escape(p)}" for i, p in enumerate(away["starters"]))
+
+    league = html.escape(match["league"])
+    m_home = html.escape(match["home"])
+    m_away = html.escape(match["away"])
+    h_team = html.escape(home["team"])
+    a_team = html.escape(away["team"])
 
     return (
-        f"📋 <b>STARTING LINEUPS</b> [{html.escape(match['league'])}]\n"
-        f"<b>{html.escape(match['home'])}</b> vs <b>{html.escape(match['away'])}</b>\n\n"
-        f"🏠 <b>{html.escape(home['team'])}</b>{h_form_str}:\n{h_players}\n\n"
-        f"✈️ <b>{html.escape(away['team'])}</b>{a_form_str}:\n{a_players}"
+        f"📋 <b>STARTING LINEUPS</b> [{league}]\n"
+        f"<b>{m_home}</b> vs <b>{m_away}</b>\n\n"
+        f"🏠 <b>{h_team}</b>{h_form}:\n{h_list}\n\n"
+        f"✈️ <b>{a_team}</b>{a_form}:\n{a_list}"
     )
 
 
-def get_lineup_text(event_id: str) -> str:
+def get_lineup_text(event_id):
     if not event_id.isdigit():
         return "Invalid Match ID. Example: <code>/lineup 701234</code>"
 
@@ -154,12 +154,12 @@ def get_lineup_text(event_id: str) -> str:
 
     lineups = get_match_lineups(event_id, match_info.get("league"))
     if not lineups:
-        return "Lineups are not published yet for this match. Try closer to kickoff."
+        return "Lineups not published yet for this match."
 
     return format_lineup_message(match_info, lineups)
 
 
-def get_live_match_items() -> list[dict]:
+def get_tracked_matches():
     items = []
     for ev in _fetch_events():
         m = _parse_match(ev)
@@ -168,22 +168,26 @@ def get_live_match_items() -> list[dict]:
     return items
 
 
-def get_live_scores(limit: int = 10) -> str:
-    live_matches = [m for m in get_live_match_items() if m["state"] == "in"]
+def get_live_scores(limit=10):
+    live_matches = [m for m in get_tracked_matches() if m["state"] == "in"]
     if not live_matches:
         return "No live matches right now."
 
     lines = ["🔴 <b>LIVE SCORES</b>\n"]
     for m in live_matches[:limit]:
+        lg = html.escape(m["league"])
+        hm = html.escape(m["home"])
+        aw = html.escape(m["away"])
+        dt = html.escape(m["detail"])
+        mid = html.escape(m["id"])
         lines.append(
-            f"• [{html.escape(m['league'])}] <b>{html.escape(m['home'])}</b> "
-            f"{m['h_score']} - {m['a_score']} <b>{html.escape(m['away'])}</b> "
-            f"({html.escape(m['detail'])}) — ID: <code>{html.escape(m['id'])}</code>"
+            f"• [{lg}] <b>{hm}</b> {m['h_score']} - {m['a_score']} "
+            f"<b>{aw}</b> ({dt}) — ID: <code>{mid}</code>"
         )
     return "\n".join(lines)
 
 
-def get_fixtures(date_str: str | None = None, limit: int = 10) -> str:
+def get_fixtures(date_str=None, limit=10):
     target_date = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
     matches = []
     for ev in _fetch_events(target_date):
@@ -197,31 +201,36 @@ def get_fixtures(date_str: str | None = None, limit: int = 10) -> str:
     lines = [f"📅 <b>FIXTURES ({html.escape(target_date)})</b>\n"]
     for m in matches[:limit]:
         kickoff = m["date"][11:16] + " UTC" if len(m["date"]) >= 16 else m["detail"]
-        lines.append(
-            f"• {html.escape(kickoff)} | <b>{html.escape(m['home'])}</b> vs "
-            f"<b>{html.escape(m['away'])}</b> — ID: <code>{html.escape(m['id'])}</code>"
-        )
+        kc = html.escape(kickoff)
+        hm = html.escape(m["home"])
+        aw = html.escape(m["away"])
+        mid = html.escape(m["id"])
+        lines.append(f"• {kc} | <b>{hm}</b> vs <b>{aw}</b> — ID: <code>{mid}</code>")
     return "\n".join(lines)
 
 
-def get_match_stats(fixture_id: str) -> str:
+def get_match_stats(fixture_id):
     if not fixture_id.isdigit():
         return "Invalid Match ID. Example: <code>/stats 701234</code>"
 
     for ev in _fetch_events():
         m = _parse_match(ev)
         if m and m["id"] == fixture_id:
+            hm = html.escape(m["home"])
+            aw = html.escape(m["away"])
+            dt = html.escape(m["detail"])
+            lg = html.escape(m["league"])
             return (
-                f"📈 <b>MATCH SNAPSHOT: {html.escape(m['home'])} vs {html.escape(m['away'])}</b>\n\n"
-                f"• <b>Status:</b> {html.escape(m['detail'])}\n"
+                f"📈 <b>MATCH SNAPSHOT: {hm} vs {aw}</b>\n\n"
+                f"• <b>Status:</b> {dt}\n"
                 f"• <b>Score:</b> {m['h_score']} — {m['a_score']}\n"
-                f"• <b>League:</b> {html.escape(m['league'])}"
+                f"• <b>League:</b> {lg}"
             )
 
-    return "Match not found in current feeds. Check IDs via /live or /fixtures."
+    return "Match not found in current feeds."
 
 
-def get_match_analysis(fixture_id: str) -> str:
+def get_match_analysis(fixture_id):
     if not fixture_id.isdigit():
         return "Invalid Match ID. Example: <code>/analysis 701234</code>"
 
@@ -238,4 +247,17 @@ def get_match_analysis(fixture_id: str) -> str:
             elif a_wins > h_wins:
                 edge = f"{m['away']} hold recent form edge ({a_form} vs {h_form})"
             else:
-                edge = f"Evenly matched
+                edge = f"Evenly matched on recent form ({h_form} vs {a_form})"
+
+            hm = html.escape(m["home"])
+            aw = html.escape(m["away"])
+            dt = html.escape(m["detail"])
+            eg = html.escape(edge)
+            return (
+                f"📊 <b>GAME ANALYSIS: {hm} vs {aw}</b>\n\n"
+                f"• <b>Status:</b> {dt}\n"
+                f"• <b>Recent Form:</b> {h_form} vs {a_form}\n"
+                f"• <b>Takeaway:</b> {eg}"
+            )
+
+    return "Analysis not available for this Match ID."
