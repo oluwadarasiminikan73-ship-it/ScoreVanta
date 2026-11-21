@@ -4,7 +4,12 @@ from datetime import datetime, timezone
 from telegram import Update
 from telegram.constants import ParseMode
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
-from sports_api import get_live_scores, get_fixtures, get_match_analysis
+from sports_api import (
+    get_fixtures,
+    get_live_scores,
+    get_match_analysis,
+    get_match_stats,
+)
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -13,80 +18,87 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
-CHANNEL_ID = os.environ.get("CHANNEL_ID")  # e.g. @yourchannel or -1001234567890
+CHANNEL_ID = os.environ.get("CHANNEL_ID")
 
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    welcome_text = (
+    text = (
         "⚽ <b>Welcome to ScoreVanta1!</b>\n\n"
-        "Delivering live scores, match updates, fixtures, statistics, and insightful game analysis to keep you ahead of every match.\n\n"
+        "Delivering live scores, match updates, fixtures, statistics, and insightful game analysis.\n\n"
         "<b>Commands:</b>\n"
-        "/live - Live match scores &amp; updates\n"
-        "/fixtures - Today's upcoming matches\n"
-        "/analysis &lt;match_id&gt; - Stats &amp; game analysis"
+        "/live - Live match scores &amp; IDs\n"
+        "/fixtures - Today's matches &amp; IDs\n"
+        "/stats &lt;match_id&gt; - Match statistics\n"
+        "/analysis &lt;match_id&gt; - Pre-match analysis &amp; probabilities"
     )
-    await update.message.reply_text(welcome_text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def live(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text("⏳ Fetching live scores...")
-    data = get_live_scores()
-    await update.message.reply_text(data, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(get_live_scores(), parse_mode=ParseMode.HTML)
 
 
 async def fixtures(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    data = get_fixtures(today)
-    await update.message.reply_text(data, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(get_fixtures(today), parse_mode=ParseMode.HTML)
+
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not context.args:
+        await update.message.reply_text(
+            "Provide a Match ID. Example: <code>/stats 123456</code>",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    await update.message.reply_text(get_match_stats(context.args[0]), parse_mode=ParseMode.HTML)
 
 
 async def analysis(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not context.args:
         await update.message.reply_text(
-            "Please provide a Match ID. Example: <code>/analysis 123456</code>",
+            "Provide a Match ID. Example: <code>/analysis 123456</code>",
             parse_mode=ParseMode.HTML,
         )
         return
-    data = get_match_analysis(context.args[0])
-    await update.message.reply_text(data, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(get_match_analysis(context.args[0]), parse_mode=ParseMode.HTML)
 
 
 async def post_channel_update(context: ContextTypes.DEFAULT_TYPE) -> None:
     if not CHANNEL_ID:
-        logger.warning("CHANNEL_ID is not set; skipping scheduled channel post.")
+        logger.warning("CHANNEL_ID not set; skipping 5-minute channel post.")
         return
 
-    data = get_live_scores()
-    # Skip posting when there are no live games or an API warning occurred
-    if data == "No live matches right now." or data.startswith("⚠️"):
-        logger.info("No live matches to post right now.")
+    report = get_live_scores()
+    if report == "No live matches right now." or report.startswith("⚠️"):
+        logger.info("No live match update posted to %s: %s", CHANNEL_ID, report)
         return
 
     await context.bot.send_message(
         chat_id=CHANNEL_ID,
-        text=data,
+        text=report,
         parse_mode=ParseMode.HTML,
     )
-    logger.info("Posted 5-minute live score update to %s", CHANNEL_ID)
+    logger.info("Published 5-minute update to channel %s", CHANNEL_ID)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
-    logger.error("Exception while handling an update:", exc_info=context.error)
+    logger.error("Unhandled exception:", exc_info=context.error)
 
 
 if __name__ == "__main__":
     if not BOT_TOKEN:
-        raise RuntimeError("BOT_TOKEN environment variable is not set.")
+        raise RuntimeError("BOT_TOKEN environment variable is missing.")
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("live", live))
     app.add_handler(CommandHandler("fixtures", fixtures))
+    app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("analysis", analysis))
     app.add_error_handler(error_handler)
 
-    # Run every 5 minutes (300 seconds), starting 10 seconds after boot
-    app.job_queue.run_repeating(post_channel_update, interval=300, first=10)
+    app.job_queue.run_repeating(post_channel_update, interval=300, first=15)
 
-    logger.info("ScoreVanta1 is running with 5-minute channel updates...")
+    logger.info("ScoreVanta1 started; posting to channel every 5 minutes.")
     app.run_polling()
